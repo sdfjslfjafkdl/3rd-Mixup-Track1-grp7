@@ -1,22 +1,20 @@
 """
-Orchestrator Agent (간단 구현)
-- 목표: 공고 선택→요건추출→회사매칭→자격판단→제안서 생성→RedTeam 평가
-- 로그를 단계별로 쌓아 반환
+Orchestrator (얇은 코디네이터)
+- 각 단계(검색/문서/프로필/요건/매칭/제안서/평가/산출물) 를 전용 Agent 에 위임한다.
+- 정보 충분성 판단 + 재시도 루프 + 제안서 버전 관리(memory.versions) 는 여기서 담당.
 """
 from typing import List, Dict, Any, Callable, Optional
 import time
 from pathlib import Path
 
-# 로컬 툴 임포트
-from backend.tools.search_bids import search_bids
-from backend.tools.document_parser import parse_document
-from backend.tools.company_rag import search_company_profile
-from backend.tools.requirement_extractor import extract_requirements_from_doc
-from backend.tools.matching import match_requirements
-from backend.tools.assess_eligibility import assess_eligibility
-from backend.tools.proposal_generator import generate_proposal, revise_proposal
-from backend.tools.evaluator import evaluate_proposal
-from backend.services.file_generator import generate_docx, generate_xlsx
+from backend.agents.search_agent import SearchAgent
+from backend.agents.document_agent import DocumentAgent
+from backend.agents.profile_agent import ProfileAgent
+from backend.agents.requirement_agent import RequirementAgent
+from backend.agents.matching_agent import MatchingAgent
+from backend.agents.proposal_agent import ProposalAgent
+from backend.agents.evaluator_agent import EvaluatorAgent
+from backend.agents.artifact_agent import ArtifactAgent
 
 
 class Orchestrator:
@@ -25,8 +23,15 @@ class Orchestrator:
         self.on_log = on_log
         # 호출된 툴 이력
         self.tool_calls: List[Dict[str, Any]] = []
-        # 같은 문서를 반복 파싱하지 않도록 간단 캐시 유지
-        self.document_cache: Dict[str, Dict[str, Any]] = {}
+        # 하위 agent 들에 log/record_tool 콜백을 주입해서 동일한 로그/툴 이력에 누적
+        self.search = SearchAgent(self.log, self._record_tool_call)
+        self.document = DocumentAgent(self.log, self._record_tool_call)
+        self.profile = ProfileAgent(self.log, self._record_tool_call)
+        self.requirement = RequirementAgent(self.log, self._record_tool_call)
+        self.matching = MatchingAgent(self.log, self._record_tool_call)
+        self.proposal = ProposalAgent(self.log, self._record_tool_call)
+        self.evaluator = EvaluatorAgent(self.log, self._record_tool_call)
+        self.artifact = ArtifactAgent(self.log, self._record_tool_call)
 
     def log(self, message: str):
         ts = time.strftime('%H:%M:%S')
@@ -40,25 +45,6 @@ class Orchestrator:
         """툴 호출 이력 기록"""
         self.tool_calls.append({"tool": tool_name, "ts": time.time()})
 
-    def _build_metadata_only_doc(self, candidate: Dict[str, Any]) -> Dict[str, Any]:
-        """PDF 미업로드 시 공고 메타데이터만으로 최소 문서 컨텍스트를 만든다."""
-        text = (
-            f"공고명: {candidate.get('title', '')}\n"
-            f"발주기관: {candidate.get('agency', '')}\n"
-            f"사업구분: {candidate.get('businessType', '')}\n"
-            f"마감일: {candidate.get('deadline', '')}\n"
-            f"예산: {candidate.get('estimatedAmount') or candidate.get('budget') or ''}\n"
-            f"공고번호: {candidate.get('bidNoticeNo', '')}\n"
-        )
-        return {
-            "text": text,
-            "sections": [{"title": "bid_metadata", "content": text, "page": 1}],
-            "raw": {"metadata_only": True},
-            "source": "metadata_only",
-            "filename": None,
-            "parse_method": "metadata_only",
-        }
-
     def run_by_search(
         self,
         keyword: str = None,
@@ -71,20 +57,16 @@ class Orchestrator:
         """검색 조건으로 Orchestrator 흐름 실행 (정보 충분성 체크 및 재시도 루프 포함)
 
         Returns:
-            dict: {logs, candidate, assessment, proposal, evaluation, tool_calls}
+            dict: {logs, candidate, assessment, proposal, evaluation, tool_calls, ...}
         """
         # 초기화
         self.logs = []
         self.tool_calls = []
-        self.document_cache = {}
+        self.document.reset_cache()
         self.log("Orchestrator 시작: 검색 기준 수집")
 
-        # Phase 1: search bids
-        self._record_tool_call("search_bids")
-        self.log("Phase 1: 공고 검색 호출 (search_bids)")
-        bids = search_bids(keyword=keyword, business_type=business_type)
-        self.log(f"수집된 공고 수: {len(bids)}")
-
+        # Phase 1: 공고 검색
+        bids = self.search.run(keyword=keyword, business_type=business_type)
         if len(bids) == 0:
             self.log("공고가 없습니다. 종료")
             return {"logs": self.logs, "tool_calls": self.tool_calls}
@@ -98,75 +80,24 @@ class Orchestrator:
         assessment = None
         profile = None
         doc = None
+        match_result = None
 
         while attempt <= max_retries:
             attempt += 1
             self.log(f"루프 시도 {attempt}/{max_retries + 1}")
 
-            if uploaded_doc_path:
-                self._record_tool_call("parse_document")
-                self.log(f"PDF 기반 작성: 업로드 문서 파싱 호출 - {uploaded_doc_path}")
-                doc_source = uploaded_doc_path
-                if doc_source in self.document_cache:
-                    doc = self.document_cache[doc_source]
-                    self.log("업로드 PDF 캐시 적중: 기존 파싱 결과 재사용")
-                else:
-                    doc = parse_document(doc_source)
-                    self.document_cache[doc_source] = doc
-                self.log(f"문서 파서 모드: {doc.get('parse_method')}")
-            elif use_metadata_only:
-                self._record_tool_call("metadata_mode")
-                self.log("메타데이터 기반 자동 작성: 업로드 PDF 없이 공고 메타데이터만 사용")
-                doc = self._build_metadata_only_doc(candidate)
-                doc_source = "metadata_only"
-            else:
-                # 기본 호환 경로. 현재 프론트에서는 PDF 미업로드 시 metadata_only를 사용한다.
-                self._record_tool_call("parse_document")
-                self.log(f"문서 파싱 호출 (parse_document) - {candidate.get('doc')}")
-                doc_source = candidate.get("doc")
-                if doc_source in self.document_cache:
-                    doc = self.document_cache[doc_source]
-                    self.log("문서 캐시 적중: 기존 파싱 결과 재사용")
-                else:
-                    doc = parse_document(doc_source)
-                    if doc_source:
-                        self.document_cache[doc_source] = doc
+            # 문서 파싱
+            doc = self.document.parse_initial(candidate, uploaded_doc_path, use_metadata_only)
             self.log(f"문서 요약: {doc.get('text')}")
 
             # 회사 정보 조회
-            self._record_tool_call("search_company_profile")
-            self.log("회사 정보 조회 호출 (search_company_profile)")
-            profile = search_company_profile(
-                company_id=company_id,
-                company_profile_override=company_profile_override
-            )
-            self.log(f"회사: {profile.get('name')} (스킬: {', '.join(profile.get('skills', []))})")
+            profile = self.profile.run(company_id, company_profile_override)
 
             # 요건 추출
-            self._record_tool_call("extract_requirements")
-            self.log("요구사항 추출 호출 (extract_requirements)")
-            requirements = extract_requirements_from_doc(candidate, doc)
-            candidate["requirements"] = requirements
-            self.log(f"추출된 요구사항 수: {len(requirements)}")
-            if candidate.get("document_summary"):
-                summary = candidate["document_summary"]
-                self.log(
-                    "문서 추출 요약: "
-                    f"예산={summary.get('estimated_amount') or '-'}, "
-                    f"제출서류={len(summary.get('submission_docs', []))}건"
-                )
+            requirements = self.requirement.run(candidate, doc)
 
-            # 매칭 및 스코어링
-            self._record_tool_call("match_requirements")
-            self.log("요구사항 매칭 호출 (match_requirements)")
-            match_result = match_requirements(requirements, profile)
-            self.log(f"전체 적합도: {match_result.get('overall_score')} - WinProb: {match_result.get('win_probability')}%")
-
-            # 자격 판단 (기존 규칙 기반) - 보완적으로 사용
-            self._record_tool_call("assess_eligibility")
-            self.log("자격 판단 호출 (assess_eligibility)")
-            assessment = assess_eligibility(candidate, profile)
-            self.log(f"자격 매칭점수: {assessment.get('match_score')}% - 충족: {assessment.get('eligible')}")
+            # 매칭 + 자격 판단
+            match_result, assessment = self.matching.run(requirements, profile, candidate)
 
             # 충분성 판단: eligible 이거나 매칭 세부 정보가 충분하면 종료
             missing_reqs = [d for d in assessment.get('details', []) if d.get('status') == 'missing']
@@ -174,69 +105,53 @@ class Orchestrator:
                 self.log("정보 충분: 자격 충족 판단 완료")
                 break
 
-            # 아니라면 재시도 전략: 문서/프로필 재수집 혹은 추가 툴 호출
+            # 아니라면 재시도 전략: 문서/프로필 재수집
             if attempt <= max_retries:
                 self.log("정보 부족: 추가 데이터 수집 시도")
-                if uploaded_doc_path:
-                    if uploaded_doc_path in self.document_cache:
-                        self.log("추가 업로드 PDF 파싱 생략: 캐시된 결과 재사용")
-                        doc = self.document_cache[uploaded_doc_path]
-                    else:
-                        self._record_tool_call("parse_document")
-                        self.log("추가 업로드 PDF 파싱 시도")
-                        doc = parse_document(uploaded_doc_path)
-                        self.document_cache[uploaded_doc_path] = doc
-                elif use_metadata_only:
-                    self.log("추가 문서 파싱 생략: 메타데이터 기반 자동 작성 유지")
-                    doc = self._build_metadata_only_doc(candidate)
-                elif candidate.get("doc") in self.document_cache:
-                    self.log("추가 문서 파싱 생략: 캐시된 결과 재사용")
-                    doc = self.document_cache[candidate.get("doc")]
-                else:
-                    self._record_tool_call("parse_document")
-                    self.log("추가 문서 파싱 시도")
-                    doc = parse_document(candidate.get('doc'))
-                    if candidate.get("doc"):
-                        self.document_cache[candidate.get("doc")] = doc
-
-                self._record_tool_call("search_company_profile")
-                self.log("추가 회사 정보 조회 시도")
-                profile = search_company_profile(
-                    company_id=company_id,
-                    company_profile_override=company_profile_override
-                )
+                doc = self.document.parse_retry(candidate, uploaded_doc_path, use_metadata_only)
+                profile = self.profile.run(company_id, company_profile_override, retry=True)
                 # 루프가 다시 돌아가면서 reassess
             else:
                 self.log("최대 재시도 도달: 루프 종료")
                 break
 
         # 제안서 생성
-        self._record_tool_call("generate_proposal")
-        self.log("제안서 생성 호출 (generate_proposal)")
-        proposal = generate_proposal(candidate, profile)
-        self.log("제안서 초안 생성 완료")
+        proposal = self.proposal.generate(candidate, profile)
 
         # Red Team 평가
-        self._record_tool_call("evaluate_proposal")
-        self.log("Red Team 평가 호출 (evaluate_proposal)")
-        evaluation = evaluate_proposal(proposal.get('draft_text'), candidate, profile, match_result=match_result, assessment=assessment)
+        evaluation = self.evaluator.run(
+            proposal.get('draft_text'),
+            candidate,
+            profile,
+            match_result,
+            assessment,
+            log_label="Red Team 평가 호출 (evaluate_proposal)",
+        )
         self.log(f"리스크 스코어: {evaluation.get('risk_score')}")
 
         # 파일 생성: docx, xlsx
-        docx_path = None
-        xlsx_path = None
-        try:
-            self._record_tool_call("generate_files")
-            self.log("문서 파일 생성 (docx/xlsx)")
-            docx_path = generate_docx(proposal, candidate, profile)
-            xlsx_path = generate_xlsx(proposal, match_result, assessment, candidate)
-            self.log(f"문서 생성 완료: {docx_path}")
-            self.log(f"평가표 생성 완료: {xlsx_path}")
-        except Exception as e:
-            self.log(f"문서 생성 실패: {e}")
+        docx_path, xlsx_path = self.artifact.run(
+            proposal, candidate, profile, match_result, assessment,
+            log_label="문서 파일 생성 (docx/xlsx)",
+            error_label="문서 생성 실패",
+            log_success=True,
+        )
 
         docx_url = f"/files/{Path(docx_path).name}" if docx_path else None
         xlsx_url = f"/files/{Path(xlsx_path).name}" if xlsx_path else None
+
+        # 원본 제안서를 versions[0] 으로 기록 (프론트가 버전 간 비교 가능하도록 본문 전체 보존)
+        initial_version = {
+            "version": 1,
+            "label": "원본",
+            "draft_text": proposal.get("draft_text", ""),
+            "risk_score": evaluation.get("risk_score"),
+            "match_score": assessment.get("match_score") if assessment else None,
+            "win_probability": match_result.get("win_probability") if match_result else None,
+            "files": {"docx": docx_url, "xlsx": xlsx_url},
+            "feedback": None,
+            "ts": time.time(),
+        }
 
         result = {
             "logs": self.logs,
@@ -262,6 +177,7 @@ class Orchestrator:
                 },
                 "tool_calls": self.tool_calls,
                 "revision_history": [],
+                "versions": [initial_version],
             },
             "files": {
                 "docx": docx_url,
@@ -292,42 +208,46 @@ class Orchestrator:
         previous_evaluation = base_result.get("evaluation", {})
         memory = base_result.get("memory", {}) or {}
         revision_history = list(memory.get("revision_history", []))
+        # 누적 버전 배열 로드 (없으면 base 의 원본 제안서로 시드)
+        versions = list(memory.get("versions", []))
+        if not versions:
+            base_files = base_result.get("files", {}) or {}
+            versions = [{
+                "version": 1,
+                "label": "원본",
+                "draft_text": proposal.get("draft_text", ""),
+                "risk_score": previous_evaluation.get("risk_score"),
+                "match_score": assessment.get("match_score") if assessment else None,
+                "win_probability": match_result.get("win_probability") if match_result else None,
+                "files": {"docx": base_files.get("docx"), "xlsx": base_files.get("xlsx")},
+                "feedback": None,
+                "ts": time.time(),
+            }]
 
-        self._record_tool_call("revise_proposal")
-        self.log("Revision Agent 호출 (revise_proposal)")
-        revised_draft = revise_proposal(
+        # 1) 본문 재작성
+        revised_draft = self.proposal.revise(
             proposal.get("draft_text", ""),
             feedback,
-            bid=candidate,
-            profile=profile,
-            assessment=assessment,
-            evaluation=previous_evaluation,
-            match_result=match_result,
+            candidate, profile, assessment, previous_evaluation, match_result,
         )
         revised_proposal = {
             **proposal,
             "draft_text": revised_draft,
         }
 
-        self._record_tool_call("evaluate_proposal")
-        self.log("Evaluator 재호출 (evaluate_proposal)")
-        revised_evaluation = evaluate_proposal(
-            revised_draft,
-            candidate,
-            profile,
-            match_result=match_result,
-            assessment=assessment
+        # 2) 재평가
+        revised_evaluation = self.evaluator.run(
+            revised_draft, candidate, profile, match_result, assessment,
+            log_label="Evaluator 재호출 (evaluate_proposal)",
         )
 
-        docx_path = None
-        xlsx_path = None
-        try:
-            self._record_tool_call("generate_files")
-            self.log("수정본 산출물 재생성 (docx/xlsx)")
-            docx_path = generate_docx(revised_proposal, candidate, profile)
-            xlsx_path = generate_xlsx(revised_proposal, match_result, assessment, candidate)
-        except Exception as e:
-            self.log(f"수정본 파일 생성 실패: {e}")
+        # 3) 산출물 재생성
+        docx_path, xlsx_path = self.artifact.run(
+            revised_proposal, candidate, profile, match_result, assessment,
+            log_label="수정본 산출물 재생성 (docx/xlsx)",
+            error_label="수정본 파일 생성 실패",
+            log_success=False,
+        )
 
         revision_entry = {
             "feedback": feedback,
@@ -341,6 +261,21 @@ class Orchestrator:
         docx_url = f"/files/{Path(docx_path).name}" if docx_path else None
         xlsx_url = f"/files/{Path(xlsx_path).name}" if xlsx_path else None
 
+        # 이번 수정본을 versions 에 누적 (본문 전체 + 별도 파일 경로 보존)
+        new_version_num = len(versions) + 1
+        new_version = {
+            "version": new_version_num,
+            "label": f"수정본 {new_version_num - 1}",
+            "draft_text": revised_draft,
+            "risk_score": revised_evaluation.get("risk_score"),
+            "match_score": assessment.get("match_score") if assessment else None,
+            "win_probability": match_result.get("win_probability") if match_result else None,
+            "files": {"docx": docx_url, "xlsx": xlsx_url},
+            "feedback": feedback,
+            "ts": time.time(),
+        }
+        versions.append(new_version)
+
         result = {
             "logs": self.logs,
             "candidate": candidate,
@@ -352,6 +287,7 @@ class Orchestrator:
             "memory": {
                 **memory,
                 "revision_history": revision_history,
+                "versions": versions,
             },
             "files": {
                 "docx": docx_url,
@@ -361,7 +297,7 @@ class Orchestrator:
             },
             "tool_calls": self.tool_calls
         }
-        self.log(f"피드백 반영 완료: revision #{len(revision_history)}")
+        self.log(f"피드백 반영 완료: revision #{len(revision_history)} (총 버전 {len(versions)}개)")
         return result
 
 

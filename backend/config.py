@@ -28,6 +28,13 @@ NARAJANGTEO_SERVICE_KEY = os.getenv("NARAJANGTEO_SERVICE_KEY", "")
 SERVER_PORT = int(os.getenv("SERVER_PORT", 8000))
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
+# CORS 허용 도메인 (콤마로 구분). 비어 있으면 데모용으로 모든 도메인 허용.
+_cors_raw = os.getenv("CORS_ORIGINS", "").strip()
+if _cors_raw:
+    CORS_ORIGINS = [origin.strip() for origin in _cors_raw.split(",") if origin.strip()]
+else:
+    CORS_ORIGINS = ["*"]
+
 # Solar Pro3 API 설정 (OpenAI 호환)
 SOLAR_API_BASE_URL = os.getenv("SOLAR_API_BASE_URL", "https://api.upstage.ai/v1")
 

@@ -3,10 +3,11 @@ BizScope - 입찰공고 자동 수집 & 제안서 작성 Agent
 FastAPI 메인 서버
 """
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import os
-from backend.config import SERVER_PORT, LOG_LEVEL
+from backend.config import SERVER_PORT, LOG_LEVEL, CORS_ORIGINS
 # 라우터 등록
 from backend.routes.orchestrator import router as orchestrator_router
 
@@ -15,6 +16,17 @@ app = FastAPI(
     title="BizScope",
     description="Solar Pro3 기반 입찰공고 제안서 자동화",
     version="0.1.0"
+)
+
+# CORS 설정
+# - Lovable 등 별도 도메인의 프론트엔드가 API를 호출할 수 있도록 허용
+# - 허용 도메인은 config.CORS_ORIGINS (환경변수 CORS_ORIGINS, 콤마 구분)에서 관리
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # 정적 파일 서빙 (프론트엔드)

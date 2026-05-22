@@ -55,7 +55,8 @@ def generate_docx(proposal: dict, candidate: dict, profile: dict) -> str:
             continue
         doc.add_paragraph(_plain_text(line))
 
-    filename = f"proposal_{candidate.get('id')}_{int(datetime.now().timestamp())}.docx"
+    # 같은 공고를 여러 번 revise 할 때 초 단위 timestamp로는 충돌할 수 있어 ms 단위 사용
+    filename = f"proposal_{candidate.get('id')}_{int(datetime.now().timestamp() * 1000)}.docx"
     path = os.path.join(OUTPUT_DIR, filename)
     doc.save(path)
     return path
@@ -91,7 +92,8 @@ def generate_xlsx(proposal: dict, match_result: dict, assessment: dict, candidat
     ws2.append(["자격 매칭 점수", assessment.get('match_score')])
     ws2.append(["자격 충족 여부", assessment.get('eligible')])
 
-    filename = f"evaluation_{candidate.get('id')}_{int(datetime.now().timestamp())}.xlsx"
+    # 같은 공고를 여러 번 revise 할 때 초 단위 timestamp로는 충돌할 수 있어 ms 단위 사용
+    filename = f"evaluation_{candidate.get('id')}_{int(datetime.now().timestamp() * 1000)}.xlsx"
     path = os.path.join(OUTPUT_DIR, filename)
     wb.save(path)
     return path
