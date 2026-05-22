@@ -2,6 +2,7 @@
 제안서 초안 생성
 generate_proposal(bid, profile) -> {draft_text, matrix}
 revise_proposal(draft, feedback) -> new_draft
+summarize_revision_changes(old_draft, new_draft, feedback) -> [수정 이유 불릿, ...]
 """
 import json
 import re
@@ -323,3 +324,102 @@ def revise_proposal(
         print(f"⚠️ [revise_proposal] Solar 재작성 실패, 폴백 사용: {e}")
 
     return draft + "\n\n[PM 피드백 반영 - 폴백]\n" + feedback
+
+
+def _parse_revision_bullets(text: str) -> List[str]:
+    """모델 출력에서 불릿 줄을 뽑아 문자열 리스트로 정리한다."""
+    if not text:
+        return []
+    bullets: List[str] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        # `- `, `* `, `• `, `1.`, `1)` 등 흔한 불릿 prefix 제거
+        cleaned = re.sub(r"^(?:[-*•]|\d+[.)])\s+", "", line).strip()
+        # 마크다운 강조 기호 제거 (본문 형식과 일관)
+        cleaned = cleaned.replace("**", "").strip()
+        if cleaned:
+            bullets.append(cleaned)
+    return bullets
+
+
+def summarize_revision_changes(
+    old_draft: str,
+    new_draft: str,
+    feedback: str,
+    bid: dict | None = None,
+    profile: dict | None = None,
+) -> List[str]:
+    """기존 초안 → 수정본 변화와 PM 피드백을 바탕으로 "무엇을 왜 바꿨는지"를
+    3~5개의 짧은 한국어 불릿으로 요약해 문자열 리스트로 반환한다.
+
+    - 본문 작성 동작과 분리되어 있어 revise_proposal 의 출력은 그대로 둔다.
+    - Solar 호출 실패 시 안전한 폴백 메시지 1건을 담은 리스트를 반환한다.
+    """
+    bid = bid or {}
+    profile = profile or {}
+
+    evidence_payload = {
+        "bid": {
+            "title": bid.get("title"),
+            "agency": bid.get("agency"),
+            "deadline": bid.get("deadline"),
+            "requirements": bid.get("requirements", [])[:8],
+        },
+        "profile": {
+            "name": profile.get("name"),
+            "skills": profile.get("skills", []),
+            "projects": profile.get("projects", []),
+        },
+    }
+
+    system_prompt = """
+너는 공공입찰 제안서 수정 사유 요약 에이전트다.
+- 기존 초안과 수정본을 비교해서 "무엇을 왜 바꿨는지"를 한국어로 3~5개의 짧은 불릿으로만 요약한다.
+- 각 불릿은 한 문장으로 작성하고, "변경 내용 — 변경 이유" 형태가 자연스럽다.
+- PM 피드백이 반영된 부분은 1개 이상 반드시 포함한다.
+- [근거 데이터]에 없는 회사 실적, 수치, 일정, 인증 등은 추가하지 마라. 본문에 실제로 나타난 변화만 근거로 한다.
+- 출력은 오직 불릿 목록만. 머리말/꼬리말/번호 매기기/설명/마크다운 표는 붙이지 마라.
+- 각 불릿은 `- ` 로 시작한다.
+""".strip()
+
+    user_prompt = f"""
+[근거 데이터]
+{json.dumps(evidence_payload, ensure_ascii=False, indent=2)}
+
+[PM 피드백]
+{feedback}
+
+[기존 초안]
+{old_draft}
+
+[수정본]
+{new_draft}
+
+[지시]
+위 변경에서 PM 피드백 반영을 중심으로 무엇을 왜 바꿨는지 3~5개의 짧은 한국어 불릿으로만 요약하라.
+""".strip()
+
+    fallback: List[str] = ["PM 피드백을 반영해 본문을 다시 작성함"]
+
+    try:
+        client = SolarClient()
+        raw = client.chat(
+            user_prompt,
+            system_prompt=system_prompt,
+            max_tokens=600,
+        ).strip()
+        print("\n" + "=" * 80)
+        print("[summarize_revision_changes] Solar Pro3 raw output start")
+        print(raw)
+        print("[summarize_revision_changes] Solar Pro3 raw output end")
+        print("=" * 80 + "\n")
+        bullets = _parse_revision_bullets(raw)
+        if bullets:
+            # 너무 많이 오면 5개까지만 사용
+            return bullets[:5]
+    except Exception as e:
+        print(f"⚠️ [summarize_revision_changes] Solar 호출 실패, 폴백 사용: {e}")
+
+    return fallback

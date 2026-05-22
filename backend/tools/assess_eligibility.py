@@ -46,10 +46,12 @@ def _is_critical_requirement(requirement: dict) -> bool:
     return req_type == "인증" or any(keyword in text for keyword in ("면허", "등록", "자격", "허가"))
 
 
-def assess_eligibility(bid: dict, profile: dict):
+def assess_eligibility(bid: dict, profile: dict, proposal_text: str = None):
     """간단 규칙 기반 자격 판단
     - 완전 매칭만 보지 않고 토큰 유사도와 절차성 항목을 함께 반영한다.
     - 자격/허가/등록 같은 치명 요건은 별도로 추적한다.
+    - proposal_text 가 주어지면 회사 프로필 외에 제안서 본문도 매칭 근거 텍스트로 사용한다.
+      (본문에서 요구사항을 구체적으로 다루면 매칭률이 올라가도록 — 임계값/절차성 규칙은 유지)
     """
     reasons = []
     total_weight = 0
@@ -62,6 +64,9 @@ def assess_eligibility(bid: dict, profile: dict):
     projects = [p.get("title", "").lower() for p in profile.get("projects", [])]
     summary = (profile.get("summary") or "").lower()
     profile_texts = skills + certs + projects + [summary]
+    # 제안서 본문이 들어오면 매칭 근거 풀에 함께 포함
+    if proposal_text:
+        profile_texts = profile_texts + [proposal_text.lower()]
     critical_missing = False
 
     for r in reqs:

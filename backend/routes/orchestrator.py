@@ -34,7 +34,11 @@ class BidSearchRequest(BaseModel):
 
 @router.post("/bids/search")
 async def search_bid_notices(req: BidSearchRequest):
-    """실제 나라장터 공고를 검색해 프론트에 반환한다."""
+    """실제 나라장터 공고를 검색해 프론트에 반환한다.
+
+    데모 안정성을 위해 외부 API 일시 실패(NaraJangteoAPIError, 네트워크 등) 시에는
+    500/502 대신 빈 목록 + 안내 메시지를 200으로 반환한다.
+    """
     try:
         bids = search_bids(keyword=req.keyword, business_type=req.business_type)
         return {
@@ -42,8 +46,14 @@ async def search_bid_notices(req: BidSearchRequest):
             "items": bids,
         }
     except NaraJangteoAPIError as e:
-        raise HTTPException(status_code=502, detail=str(e))
+        print(f"[search_bid_notices] 나라장터 API 실패 (모든 키워드 후보 실패): {e}")
+        return {
+            "count": 0,
+            "items": [],
+            "message": "일시적으로 공고를 불러오지 못했습니다. 다시 시도해 주세요.",
+        }
     except Exception as e:
+        # 외부 API와 무관한 예외(코드 버그 등)는 디버깅을 위해 500으로 남겨둠
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/orchestrator/start")

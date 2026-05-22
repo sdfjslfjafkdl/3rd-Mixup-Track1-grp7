@@ -118,7 +118,17 @@ class Orchestrator:
         # 제안서 생성
         proposal = self.proposal.generate(candidate, profile)
 
-        # Red Team 평가
+        # 자격/매칭 재계산: 생성된 본문을 근거 텍스트에 포함시켜 점수가 본문을 반영하게 함
+        # (루프 단계의 assessment/match_result 는 사전 충분성 판단용으로 이미 끝났음)
+        match_result, assessment = self.matching.run(
+            candidate.get("requirements", []),
+            profile,
+            candidate,
+            proposal_text=proposal.get("draft_text", ""),
+            label_suffix=" (본문 반영)",
+        )
+
+        # Red Team 평가 (본문 반영된 assessment/match_result 사용)
         evaluation = self.evaluator.run(
             proposal.get('draft_text'),
             candidate,
@@ -141,6 +151,7 @@ class Orchestrator:
         xlsx_url = f"/files/{Path(xlsx_path).name}" if xlsx_path else None
 
         # 원본 제안서를 versions[0] 으로 기록 (프론트가 버전 간 비교 가능하도록 본문 전체 보존)
+        # 원본은 수정 이력이 없으므로 change_reasons 는 None
         initial_version = {
             "version": 1,
             "label": "원본",
@@ -150,6 +161,7 @@ class Orchestrator:
             "win_probability": match_result.get("win_probability") if match_result else None,
             "files": {"docx": docx_url, "xlsx": xlsx_url},
             "feedback": None,
+            "change_reasons": None,
             "ts": time.time(),
         }
 
@@ -221,12 +233,14 @@ class Orchestrator:
                 "win_probability": match_result.get("win_probability") if match_result else None,
                 "files": {"docx": base_files.get("docx"), "xlsx": base_files.get("xlsx")},
                 "feedback": None,
+                "change_reasons": None,
                 "ts": time.time(),
             }]
 
         # 1) 본문 재작성
+        old_draft = proposal.get("draft_text", "")
         revised_draft = self.proposal.revise(
-            proposal.get("draft_text", ""),
+            old_draft,
             feedback,
             candidate, profile, assessment, previous_evaluation, match_result,
         )
@@ -235,7 +249,21 @@ class Orchestrator:
             "draft_text": revised_draft,
         }
 
-        # 2) 재평가
+        # 1-b) 수정 이유 요약 (실패해도 폴백 메시지가 들어와 에러 없이 진행)
+        change_reasons = self.proposal.summarize_changes(
+            old_draft, revised_draft, feedback, candidate, profile,
+        )
+
+        # 1-c) 본문 변경 반영해 자격/매칭 재계산 — 점수가 다듬은 본문을 진짜로 반영하도록
+        match_result, assessment = self.matching.run(
+            candidate.get("requirements", []),
+            profile,
+            candidate,
+            proposal_text=revised_draft,
+            label_suffix=" (수정본 반영)",
+        )
+
+        # 2) 재평가 (재계산된 assessment/match_result 로 risk_score 가 자연히 갱신됨)
         revised_evaluation = self.evaluator.run(
             revised_draft, candidate, profile, match_result, assessment,
             log_label="Evaluator 재호출 (evaluate_proposal)",
@@ -272,6 +300,7 @@ class Orchestrator:
             "win_probability": match_result.get("win_probability") if match_result else None,
             "files": {"docx": docx_url, "xlsx": xlsx_url},
             "feedback": feedback,
+            "change_reasons": change_reasons,
             "ts": time.time(),
         }
         versions.append(new_version)

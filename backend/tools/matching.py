@@ -49,11 +49,12 @@ def _base_score_for_requirement(requirement_type: str, requirement_text: str) ->
         return 35
     return 20
 
-def match_requirements(requirements: list, profile: dict):
+def match_requirements(requirements: list, profile: dict, proposal_text: str = None):
     """매칭 알고리즘(간단한 룰 기반)
     - 각 요구사항에 대해 회사 skills/certifications/projects에서 키워드 매칭
     - 항목별 점수: 0~100
     - 전체 Win Probability: 가중평균과 일부 휴리스틱 반영
+    - proposal_text 가 주어지면 회사 프로필 외에 제안서 본문도 토큰 유사도 매칭 근거에 포함한다.
     """
     skills = [s.lower() for s in profile.get("skills", [])]
     certs = [c.lower() for c in profile.get("certifications", [])]
@@ -61,6 +62,9 @@ def match_requirements(requirements: list, profile: dict):
     summary = (profile.get("summary") or "").lower()
     company_name = (profile.get("name") or "").lower()
     evidence_pool = skills + certs + projects + [summary, company_name]
+    # 제안서 본문이 들어오면 토큰 매칭 근거 풀에 포함 (skill/cert 단어 매칭 규칙은 그대로 유지)
+    if proposal_text:
+        evidence_pool = evidence_pool + [proposal_text.lower()]
 
     total_weight = 0
     weighted_score_sum = 0
