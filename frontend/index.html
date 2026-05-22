@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BizScope - 입찰공고 제안서 자동화</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <h1>🎯 BizScope</h1>
+            <p>입찰공고를 확인하고, 바로 제안서를 만들고, 피드백으로 다듬는 AI 제안 파트너</p>
+        </header>
+
+        <main class="main-content">
+            <section class="phase-section" id="bids-section">
+                <div class="section-head">
+                    <div>
+                        <h2>입찰공고</h2>
+                        <p class="section-subtitle">회사 정보와 금액·기간 조건을 입력하면 실제 나라장터 공고를 자동으로 좁혀 보여줍니다.</p>
+                    </div>
+                    <button id="btn-search-bids" class="secondary-button">↻ 새로고침</button>
+                </div>
+                <div class="filter-panel">
+                    <div class="filter-panel-head">
+                        <div>
+                            <h3>회사 정보 기반 필터</h3>
+                            <p>입력한 회사 정보와 공고 조건을 기준으로 카드 목록이 자동으로 갱신됩니다.</p>
+                        </div>
+                        <button id="btn-reset-filters" class="secondary-button filter-reset-button" type="button">필터 초기화</button>
+                    </div>
+                    <div class="filter-grid">
+                        <label>
+                            <span>회사명</span>
+                            <input id="filter-company-name" type="text" placeholder="예: 에이아이솔루션즈">
+                        </label>
+                        <label>
+                            <span>업무구분</span>
+                            <select id="filter-business-type">
+                                <option value="용역">용역</option>
+                                <option value="공사">공사</option>
+                                <option value="물품">물품</option>
+                                <option value="외자">외자</option>
+                            </select>
+                        </label>
+                        <label class="filter-span-2">
+                            <span>업종 / 주요 사업 내용</span>
+                            <input id="filter-business-domain" type="text" placeholder="예: IT서비스, 데이터 분석, 공공 시스템 구축">
+                        </label>
+                        <label class="filter-span-2">
+                            <span>보유 기술 및 역량</span>
+                            <input id="filter-company-skills" type="text" placeholder="예: AI, 데이터 파이프라인, 클라우드, 보안">
+                        </label>
+                        <label class="filter-span-2">
+                            <span>보유 인증 및 실적</span>
+                            <textarea id="filter-company-credentials" rows="3" placeholder="예: ISO27001, 공공기관 데이터 플랫폼 구축, 앱 개발 실적"></textarea>
+                        </label>
+                        <label>
+                            <span>최소 입찰 금액</span>
+                            <input id="filter-budget-min" type="number" min="0" step="1000000" placeholder="예: 30000000">
+                        </label>
+                        <label>
+                            <span>최대 입찰 금액</span>
+                            <input id="filter-budget-max" type="number" min="0" step="1000000" placeholder="예: 200000000">
+                        </label>
+                        <label>
+                            <span>마감일 시작</span>
+                            <input id="filter-deadline-from" type="date">
+                        </label>
+                        <label>
+                            <span>마감일 종료</span>
+                            <input id="filter-deadline-to" type="date">
+                        </label>
+                    </div>
+                    <div class="filter-summary">
+                        <strong id="filter-result-count">공고를 불러오는 중입니다.</strong>
+                        <span id="filter-result-hint">페이지에 들어오면 실제 공고가 자동 조회됩니다.</span>
+                    </div>
+                </div>
+                <div id="bids-list" class="bids-list"></div>
+                <p id="no-bids-msg" class="no-data">조건에 맞는 공고를 불러오는 중입니다.</p>
+            </section>
+
+            <section class="phase-section" id="proposal-section">
+                <h2>제안서</h2>
+                <p class="section-subtitle">공고를 선택하면 Agent가 분석 로그를 남기면서 초안과 Scorecard를 생성합니다.</p>
+                <div id="selected-bid-info" class="selected-bid"></div>
+                <div class="upload-panel">
+                    <label class="upload-label" for="bid-pdf-file">입찰공고 PDF 업로드 (선택)</label>
+                    <p class="upload-help">PDF를 올리면 실제 요구사항/평가항목 기준으로 더 정밀하게 작성합니다. 업로드하지 않으면 공고 메타데이터만으로 자동 생성합니다.</p>
+                    <input id="bid-pdf-file" type="file" accept=".pdf,application/pdf">
+                    <p id="bid-pdf-status" class="upload-status">아직 업로드한 PDF가 없습니다.</p>
+                    <button id="btn-generate-proposal" type="button">이 공고로 제안서 생성</button>
+                </div>
+                <div id="proposal-result" class="proposal-result"></div>
+            </section>
+
+            <section class="phase-section" id="refine-section">
+                <h2>다듬기</h2>
+                <p class="section-subtitle">PM 피드백을 입력하면 수정본과 재평가 결과가 바로 갱신됩니다.</p>
+                <div id="feedback-panel" class="feedback-panel hidden">
+                    <div class="feedback-grid">
+                        <label>
+                            <span>피드백 유형</span>
+                            <select id="feedback-mode">
+                                <option>내용 수정</option>
+                                <option>섹션 추가</option>
+                                <option>강조 조절</option>
+                            </select>
+                        </label>
+                        <label>
+                            <span>추가 섹션 요청</span>
+                            <input id="feedback-section-request" type="text" placeholder="예: 수행조직, 리스크 대응 전략">
+                        </label>
+                        <label>
+                            <span>강도 조절</span>
+                            <select id="feedback-tone-strength">
+                                <option value="">선택 안 함</option>
+                                <option>보수적으로</option>
+                                <option>균형 있게</option>
+                                <option>더 공격적으로</option>
+                            </select>
+                        </label>
+                    </div>
+                    <label class="feedback-textarea-wrap">
+                        <span>PM 피드백</span>
+                        <textarea id="feedback-text" rows="5" placeholder="예: 실적 근거를 더 구체적으로 쓰고, 안전보건수준평가 대응 전략을 별도 섹션으로 추가해줘."></textarea>
+                    </label>
+                    <button id="btn-revise-proposal" disabled>🔁 피드백 반영 재작성</button>
+                    <div id="feedback-download-actions" class="feedback-download-actions"></div>
+                    <div id="revision-summary" class="revision-summary"></div>
+                </div>
+                <p id="feedback-empty-msg" class="no-data">제안서를 먼저 생성하면 이곳에서 바로 수정 요청을 보낼 수 있습니다.</p>
+            </section>
+
+            <!-- Agent 실시간 로그 -->
+            <section class="phase-section" id="agent-logs">
+                <h2>⚙️ Agent 실행 로그</h2>
+                <div id="logs-container" class="logs-container"></div>
+            </section>
+        </main>
+
+        <footer class="footer">
+            <p>BizScope MVP | STEP 0 ✅ → STEP 1 진행 중...</p>
+        </footer>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>

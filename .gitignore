@@ -1,0 +1,20 @@
+.env
+.env.local
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+*.egg-info/
+dist/
+build/
+.DS_Store
+.vscode/
+*.log
+
+# Generated artifacts
+output/
+backend/output/
+.codex_write_test

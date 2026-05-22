@@ -1,0 +1,21 @@
+# 웹 프레임워크
+fastapi==0.109.0
+uvicorn==0.27.0
+python-dotenv==1.0.0
+pydantic==2.5.0
+
+# Solar Pro3 / Upstage API (OpenAI 호환)
+openai==1.52.2
+httpx==0.23.3
+
+# 문서 생성
+python-docx==0.8.11
+openpyxl==3.1.5
+
+# 유틸
+aiohttp==3.9.1
+requests==2.31.0
+
+# 테스트 & 로깅
+pytest==7.4.3
+
